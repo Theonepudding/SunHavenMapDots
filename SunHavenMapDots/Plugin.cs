@@ -39,7 +39,7 @@ namespace SunHavenMapDots
 
             DotOffsetX = Config.Bind("Display", "DotOffsetX", 0f,
                 new ConfigDescription("Fine-tune horizontal position of dots (map units). Positive = right.", new AcceptableValueRange<float>(-50f, 50f)));
-            DotOffsetY = Config.Bind("Display", "DotOffsetY", 0f,
+            DotOffsetY = Config.Bind("Display", "DotOffsetY", 8f,
                 new ConfigDescription("Fine-tune vertical position of dots (map units). Positive = up.", new AcceptableValueRange<float>(-50f, 50f)));
 
             ShowLocalPlayer = Config.Bind("Display", "ShowLocalPlayer", true,
