@@ -1,0 +1,20 @@
+## .NET / MSBuild
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+## NuGet
+*.nupkg
+packages/
+project.lock.json
+project.assets.json
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Built output (the DLL is distributed via Releases, not committed)
+**/*.dll
+!dist/*.dll

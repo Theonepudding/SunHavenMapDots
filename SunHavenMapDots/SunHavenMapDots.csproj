@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>SunHavenMapDots</AssemblyName>
+    <RootNamespace>SunHavenMapDots</RootNamespace>
+    <LangVersion>9</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- Update this path if your game is installed elsewhere -->
+    <GamePath Condition="'$(GamePath)'==''">C:\Program Files (x86)\Steam\steamapps\common\Sun Haven</GamePath>
+  </PropertyGroup>
+
+  <!-- BepInEx from NuGet (provides 0Harmony + BepInEx.Core) -->
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Core"          Version="5.4.22" IncludeAssets="compile" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.1.0" />
+  </ItemGroup>
+
+  <!-- Game / Unity assemblies (not redistributed – must come from your game installation) -->
+  <ItemGroup>
+    <Reference Include="SunHaven.Core">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\SunHaven.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mirror">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Mirror.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Copy the built DLL into the game's BepInEx plugins folder after build -->
+  <Target Name="DeployToGame" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(OutputPath)$(AssemblyName).dll"
+      DestinationFolder="$(GamePath)\BepInEx\plugins\SunHavenMapDots"
+      SkipUnchangedFiles="true" />
+    <Message Text="Deployed $(AssemblyName).dll to $(GamePath)\BepInEx\plugins\SunHavenMapDots" Importance="high" />
+  </Target>
+
+</Project>
