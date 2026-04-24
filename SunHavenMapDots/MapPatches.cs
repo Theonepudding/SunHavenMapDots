@@ -195,6 +195,8 @@ namespace SunHavenMapDots
             foreach (var k in toRemove) MapDotState.Dots.Remove(k);
         }
 
+        static float _logTimer = 0f;
+
         static void PositionDot(Map map, bool immediate, int id, Vector3 worldPos,
                                 string scene, int colorIndex, RectTransform mapContent, string playerName)
         {
@@ -203,15 +205,23 @@ namespace SunHavenMapDots
                 var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
                 dot = CreateDot(mapContent, playerName, color);
                 MapDotState.Dots[id] = dot;
-                Plugin.Log.LogInfo($"[MapDots] Created dot id={id} scene='{scene}' world={worldPos}");
             }
 
             try
             {
                 var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(
                     map, new object[] { dot.Img, worldPos, scene });
+                mapPos.x += Plugin.DotOffsetX.Value;
+                mapPos.y += Plugin.DotOffsetY.Value;
                 MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, true });
                 dot.Root.SetActive(true);
+
+                _logTimer += Time.unscaledDeltaTime;
+                if (_logTimer >= 2f && id == -1)
+                {
+                    _logTimer = 0f;
+                    Plugin.Log.LogInfo($"[MapDots] scene='{scene}' world=({worldPos.x:F1},{worldPos.y:F1}) mapPos=({mapPos.x:F1},{mapPos.y:F1}) localPos={dot.Img.transform.localPosition}");
+                }
             }
             catch (Exception ex)
             {

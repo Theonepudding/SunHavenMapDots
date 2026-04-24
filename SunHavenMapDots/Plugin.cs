@@ -12,6 +12,8 @@ namespace SunHavenMapDots
         internal static ManualLogSource Log;
 
         public static ConfigEntry<float> DotSize;
+        public static ConfigEntry<float> DotOffsetX;
+        public static ConfigEntry<float> DotOffsetY;
         public static ConfigEntry<bool> ShowLocalPlayer;
         public static ConfigEntry<bool> ShowRemotePlayers;
         public static ConfigEntry<bool> ShowPlayerNames;
@@ -34,6 +36,11 @@ namespace SunHavenMapDots
 
             DotSize = Config.Bind("Display", "DotSize", 6f,
                 new ConfigDescription("Diameter (map units) of each player dot.", new AcceptableValueRange<float>(2f, 20f)));
+
+            DotOffsetX = Config.Bind("Display", "DotOffsetX", 0f,
+                new ConfigDescription("Fine-tune horizontal position of dots (map units). Positive = right.", new AcceptableValueRange<float>(-50f, 50f)));
+            DotOffsetY = Config.Bind("Display", "DotOffsetY", 0f,
+                new ConfigDescription("Fine-tune vertical position of dots (map units). Positive = up.", new AcceptableValueRange<float>(-50f, 50f)));
 
             ShowLocalPlayer = Config.Bind("Display", "ShowLocalPlayer", true,
                 "Show the local player's dot (yellow) on the map.");
