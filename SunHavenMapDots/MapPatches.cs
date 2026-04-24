@@ -213,14 +213,15 @@ namespace SunHavenMapDots
                     map, new object[] { dot.Img, worldPos, scene });
                 mapPos.x += Plugin.DotOffsetX.Value;
                 mapPos.y += Plugin.DotOffsetY.Value;
-                MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, true });
+                // Set localPosition directly — bypasses SetImagePosition's variable NPC stacking offset
+                ((RectTransform)dot.Root.transform).localPosition = new Vector3(mapPos.x, mapPos.y, -1f);
                 dot.Root.SetActive(true);
 
                 _logTimer += Time.unscaledDeltaTime;
                 if (_logTimer >= 2f && id == -1)
                 {
                     _logTimer = 0f;
-                    Plugin.Log.LogInfo($"[MapDots] scene='{scene}' world=({worldPos.x:F1},{worldPos.y:F1}) mapPos=({mapPos.x:F1},{mapPos.y:F1}) localPos={dot.Img.transform.localPosition}");
+                    Plugin.Log.LogInfo($"[MapDots] scene='{scene}' world=({worldPos.x:F1},{worldPos.y:F1}) mapPos=({mapPos.x:F1},{mapPos.y:F1}) localPos={dot.Root.transform.localPosition}");
                 }
             }
             catch (Exception ex)
