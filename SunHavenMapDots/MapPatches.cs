@@ -10,54 +10,70 @@ using Wish;
 
 namespace SunHavenMapDots
 {
-    // ── Shared state used by all three patch classes ───────────────────────────
     internal static class MapDotState
     {
-        // Reflection cache
-        internal static FieldInfo  FMapContent;
-        internal static FieldInfo  FPlayerImages;
-        internal static MethodInfo MGetPlayerPos;
-        internal static MethodInfo MSetImagePos;
-        internal static FieldInfo  FNGPPlayer;
-        internal static FieldInfo  FNGPPlayerName;
-        internal static FieldInfo  FNGPFullyInit;
+        internal static MethodInfo   MGetPlayerPos;
+        internal static MethodInfo   MSetImagePos;
+        internal static FieldInfo    FNGPPlayer;
+        internal static FieldInfo    FNGPPlayerName;
+        internal static FieldInfo    FNGPFullyInit;
         internal static PropertyInfo PNGPSameScene;
-        internal static FieldInfo  FPlayerScene;
+        internal static FieldInfo    FPlayerScene;
         internal static PropertyInfo PPlayerExact;
 
-        // key = connection id, value = dot data
         internal static readonly Dictionary<int, PlayerDot> Dots = new Dictionary<int, PlayerDot>();
-        internal static Map CurrentMap;
+        internal static Transform NpcImages;
 
         internal static void EnsureReflection()
         {
-            if (FMapContent != null) return;
+            if (MGetPlayerPos != null) return;
 
             const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
-            var mapType    = typeof(Map);
-            FMapContent    = mapType.GetField("mapContent",  F) ?? throw new MissingFieldException(nameof(Map), "mapContent");
-            FPlayerImages  = mapType.GetField("playerImages", F) ?? throw new MissingFieldException(nameof(Map), "playerImages");
-            MGetPlayerPos  = mapType.GetMethod("GetPlayerPosition",
-                                F, null, new[] { typeof(Image), typeof(Vector3), typeof(string) }, null)
-                             ?? throw new MissingMethodException(nameof(Map), "GetPlayerPosition");
-            MSetImagePos   = mapType.GetMethod("SetImagePosition",
-                                F, null, new[] { typeof(Image), typeof(Vector2), typeof(bool) }, null)
-                             ?? throw new MissingMethodException(nameof(Map), "SetImagePosition");
+            var mapType = typeof(Map);
+            MGetPlayerPos = mapType.GetMethod("GetPlayerPosition",
+                               F, null, new[] { typeof(Image), typeof(Vector3), typeof(string) }, null)
+                         ?? throw new MissingMethodException(nameof(Map), "GetPlayerPosition");
+            MSetImagePos = mapType.GetMethod("SetImagePosition",
+                               F, null, new[] { typeof(Image), typeof(Vector2), typeof(bool) }, null)
+                         ?? throw new MissingMethodException(nameof(Map), "SetImagePosition");
 
-            var ngpType    = typeof(NetworkGamePlayer);
+            var ngpType = typeof(NetworkGamePlayer);
             FNGPPlayer     = ngpType.GetField("player",             F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "player");
             FNGPPlayerName = ngpType.GetField("playerName",         F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "playerName");
             FNGPFullyInit  = ngpType.GetField("isFullyInitialized", F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "isFullyInitialized");
-            PNGPSameScene  = ngpType.GetProperty("SameScene", F); // optional
+            PNGPSameScene  = ngpType.GetProperty("SameScene", F);
 
             var playerType = typeof(Player);
-            FPlayerScene   = playerType.GetField("currentScene", F) ?? throw new MissingFieldException(nameof(Player), "currentScene");
-            PPlayerExact   = playerType.GetProperty("ExactPosition", F)
-                          ?? playerType.GetProperty("ExactPosition", BindingFlags.Instance | BindingFlags.Public)
-                          ?? throw new MissingMemberException(nameof(Player), "ExactPosition");
+            FPlayerScene = playerType.GetField("currentScene", F) ?? throw new MissingFieldException(nameof(Player), "currentScene");
+            PPlayerExact = playerType.GetProperty("ExactPosition", F)
+                      ?? playerType.GetProperty("ExactPosition", BindingFlags.Instance | BindingFlags.Public)
+                      ?? throw new MissingMemberException(nameof(Player), "ExactPosition");
 
             Plugin.Log.LogInfo("[MapDots] Reflection cache ready.");
+        }
+
+        internal static Transform FindNpcImages()
+        {
+            var playerGo = GameObject.Find("Player(Clone)");
+            if (playerGo == null) return null;
+
+            var mapImageTr = playerGo.transform.Find(
+                "UI_Inventory/Inventory/Map/Background/Scroll View/Viewport/Content/MapImage");
+            if (mapImageTr == null) return null;
+
+            return FindChildByName(mapImageTr, "SunHavenNPCImages");
+        }
+
+        static Transform FindChildByName(Transform parent, string name)
+        {
+            foreach (Transform child in parent)
+            {
+                if (child.name == name) return child;
+                var found = FindChildByName(child, name);
+                if (found != null) return found;
+            }
+            return null;
         }
 
         internal static void DestroyAllDots()
@@ -65,15 +81,15 @@ namespace SunHavenMapDots
             foreach (var dot in Dots.Values)
                 if (dot.Root != null) UnityEngine.Object.Destroy(dot.Root);
             Dots.Clear();
+            NpcImages = null;
         }
     }
 
-    // ── Data for one player dot ────────────────────────────────────────────────
     internal sealed class PlayerDot
     {
-        internal readonly GameObject       Root;
-        internal readonly Image            Img;
-        internal readonly TextMeshProUGUI  Label;
+        internal readonly GameObject      Root;
+        internal readonly Image           Img;
+        internal readonly TextMeshProUGUI Label;
 
         internal PlayerDot(GameObject root, Image img, TextMeshProUGUI label)
         {
@@ -83,17 +99,19 @@ namespace SunHavenMapDots
         }
     }
 
-    // ── Patch 1: UpdatePlayerImagePosition ────────────────────────────────────
     [HarmonyPatch(typeof(Map), "UpdatePlayerImagePosition")]
     internal static class Patch_UpdatePlayerImagePosition
     {
+        private const float Y_OFFSET = 24f;
+        internal static bool LoggedOnce = false;
+
         [HarmonyPostfix]
         static void Postfix(Map __instance, bool immediate)
         {
             try
             {
                 MapDotState.EnsureReflection();
-                HandleLocalPlayerFix(__instance, immediate);
+                HandleLocalPlayerFix();
                 if (Plugin.ShowRemotePlayers.Value)
                     HandleRemotePlayers(__instance, immediate);
             }
@@ -103,24 +121,67 @@ namespace SunHavenMapDots
             }
         }
 
-        static void HandleLocalPlayerFix(Map map, bool immediate)
+        static Transform GetNpcImages()
+        {
+            if (MapDotState.NpcImages != null && MapDotState.NpcImages.gameObject != null)
+                return MapDotState.NpcImages;
+            MapDotState.NpcImages = MapDotState.FindNpcImages();
+            return MapDotState.NpcImages;
+        }
+
+        static void HandleLocalPlayerFix()
         {
             if (!Plugin.ShowLocalPlayer.Value) return;
 
-            var images = MapDotState.FPlayerImages.GetValue(map) as List<Image>;
-            if (images == null || images.Count == 0) return;
+            var npcImages = GetNpcImages();
+            if (npcImages == null) return;
 
-            var localImg = images[0];
-            if (localImg == null) return;
+            var candidates = new List<(Transform t, Image img)>();
+            foreach (Transform child in npcImages)
+            {
+                if (!child.name.StartsWith("Player", StringComparison.OrdinalIgnoreCase)) continue;
+                if (child.name.StartsWith("PlayerDot_", StringComparison.OrdinalIgnoreCase)) continue;
+                var img = child.GetComponent<Image>();
+                if (img == null) continue;
+                candidates.Add((child, img));
+            }
 
-            if (!localImg.gameObject.activeSelf)
-                localImg.gameObject.SetActive(true);
+            if (!LoggedOnce)
+            {
+                LoggedOnce = true;
+                Plugin.Log.LogInfo($"[MapDots] NpcImages='{npcImages.name}' children={npcImages.childCount} markers={candidates.Count}");
+                foreach (var c in candidates)
+                    Plugin.Log.LogInfo($"[MapDots]   '{c.t.name}' activeH={c.t.gameObject.activeInHierarchy} pos={c.img.rectTransform.anchoredPosition}");
+            }
 
-            localImg.color = Plugin.PlayerColors[0];
+            if (candidates.Count == 0) return;
+
+            // Sort: prefer activeInHierarchy, then activeSelf
+            candidates.Sort((a, b) =>
+            {
+                int dh = b.t.gameObject.activeInHierarchy.CompareTo(a.t.gameObject.activeInHierarchy);
+                if (dh != 0) return dh;
+                return b.t.gameObject.activeSelf.CompareTo(a.t.gameObject.activeSelf);
+            });
+
+            var best = candidates[0];
+            for (int i = 1; i < candidates.Count; i++)
+                candidates[i].t.gameObject.SetActive(false);
+
+            if (!best.t.gameObject.activeSelf)
+                best.t.gameObject.SetActive(true);
+
+            best.img.color = Plugin.PlayerColors[0];
 
             float d  = Plugin.DotSize.Value * 2f;
-            var   rt = localImg.rectTransform;
-            if (rt != null) rt.sizeDelta = new Vector2(d, d);
+            var   rt = best.img.rectTransform;
+            if (rt != null)
+            {
+                rt.sizeDelta = new Vector2(d, d);
+                // Game already moved the marker this frame; bump it up by Y_OFFSET
+                var pos = rt.anchoredPosition;
+                rt.anchoredPosition = new Vector2(pos.x, pos.y + Y_OFFSET);
+            }
         }
 
         static void HandleRemotePlayers(Map map, bool immediate)
@@ -128,8 +189,8 @@ namespace SunHavenMapDots
             var lobby = NetworkLobbyManager.Instance;
             if (lobby == null) return;
 
-            var mapContent = MapDotState.FMapContent.GetValue(map) as RectTransform;
-            if (mapContent == null) return;
+            var npcImages = GetNpcImages();
+            if (npcImages == null) return;
 
             var activeCids = new HashSet<int>();
             int colorIndex = 1;
@@ -154,7 +215,7 @@ namespace SunHavenMapDots
                 {
                     var pName = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
                     var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
-                    dot = CreateDot(mapContent, pName, color);
+                    dot = CreateDot(npcImages, pName, color);
                     MapDotState.Dots[cid] = dot;
                 }
 
@@ -167,6 +228,7 @@ namespace SunHavenMapDots
                 try
                 {
                     var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(map, new object[] { dot.Img, worldPos3, sceneName });
+                    mapPos.y += Y_OFFSET;
                     MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
                     dot.Root.SetActive(true);
                 }
@@ -176,7 +238,6 @@ namespace SunHavenMapDots
                 }
             }
 
-            // Deactivate dots for players who left or changed scene
             var toRemove = new List<int>();
             foreach (var kvp in MapDotState.Dots)
             {
@@ -187,11 +248,12 @@ namespace SunHavenMapDots
             foreach (var k in toRemove) MapDotState.Dots.Remove(k);
         }
 
-        static PlayerDot CreateDot(RectTransform parent, string playerName, Color color)
+        static PlayerDot CreateDot(Transform parent, string playerName, Color color)
         {
             float size = Plugin.DotSize.Value * 2f;
 
-            var root   = new GameObject($"MapDot_{playerName}", typeof(RectTransform));
+            var root = new GameObject($"PlayerDot_{playerName}",
+                typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             root.transform.SetParent(parent, false);
             root.transform.SetAsLastSibling();
 
@@ -199,31 +261,15 @@ namespace SunHavenMapDots
             rootRt.anchorMin = rootRt.anchorMax = rootRt.pivot = new Vector2(0.5f, 0.5f);
             rootRt.sizeDelta = new Vector2(size, size);
 
-            // Coloured outer circle
-            var ringGo = new GameObject("Ring", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-            ringGo.transform.SetParent(root.transform, false);
-            var ringRt  = ringGo.GetComponent<RectTransform>();
-            ringRt.anchorMin = ringRt.anchorMax = ringRt.pivot = new Vector2(0.5f, 0.5f);
-            ringRt.sizeDelta = new Vector2(size, size);
-            var ringImg = ringGo.GetComponent<Image>();
-            ringImg.color = color;
-            ringImg.raycastTarget = false;
+            var img = root.GetComponent<Image>();
+            img.color = color;
+            img.raycastTarget = false;
 
-            // White centre dot
-            var coreGo = new GameObject("Core", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-            coreGo.transform.SetParent(root.transform, false);
-            var coreRt  = coreGo.GetComponent<RectTransform>();
-            coreRt.anchorMin = coreRt.anchorMax = coreRt.pivot = new Vector2(0.5f, 0.5f);
-            coreRt.sizeDelta = new Vector2(size * 0.45f, size * 0.45f);
-            var coreImg = coreGo.GetComponent<Image>();
-            coreImg.color = Color.white;
-            coreImg.raycastTarget = false;
-
-            // Optional name label
             TextMeshProUGUI label = null;
             if (Plugin.ShowPlayerNames.Value)
             {
-                var labelGo = new GameObject("Label", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+                var labelGo = new GameObject("Label",
+                    typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
                 labelGo.transform.SetParent(root.transform, false);
                 var labelRt = labelGo.GetComponent<RectTransform>();
                 labelRt.anchorMin = labelRt.anchorMax = labelRt.pivot = new Vector2(0.5f, 0f);
@@ -237,26 +283,21 @@ namespace SunHavenMapDots
                 label.raycastTarget = false;
             }
 
-            return new PlayerDot(root, ringImg, label);
+            return new PlayerDot(root, img, label);
         }
     }
 
-    // ── Patch 2: Map.OnEnable ─────────────────────────────────────────────────
     [HarmonyPatch(typeof(Map), "OnEnable")]
     internal static class Patch_MapOnEnable
     {
         [HarmonyPostfix]
-        static void Postfix(Map __instance)
+        static void Postfix()
         {
-            if (MapDotState.CurrentMap != __instance)
-            {
-                MapDotState.DestroyAllDots();
-                MapDotState.CurrentMap = __instance;
-            }
+            MapDotState.DestroyAllDots();
+            Patch_UpdatePlayerImagePosition.LoggedOnce = false;
         }
     }
 
-    // ── Patch 3: Map.OnDisable ────────────────────────────────────────────────
     [HarmonyPatch(typeof(Map), "OnDisable")]
     internal static class Patch_MapOnDisable
     {
