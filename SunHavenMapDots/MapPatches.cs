@@ -1,6 +1,7 @@
 using HarmonyLib;
 using Mirror;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using TMPro;
@@ -14,23 +15,32 @@ namespace SunHavenMapDots
     {
         internal static MethodInfo   MGetPlayerPos;
         internal static MethodInfo   MSetImagePos;
+
+        // NetworkGamePlayer fields
         internal static FieldInfo    FNGPPlayer;
         internal static FieldInfo    FNGPPlayerName;
         internal static FieldInfo    FNGPFullyInit;
-        internal static PropertyInfo PNGPSameScene;
-        internal static FieldInfo    FPlayerScene;
-        internal static PropertyInfo PPlayerExact;
+        internal static FieldInfo    FNGPScene;       // Int16 scene ID
 
-        // connection id -1 = local player, 0+ = remote players
+        // Scene lookup
+        internal static PropertyInfo PSceneSettingsMgrInst; // SceneSettingsManager.Instance
+        internal static FieldInfo    FSceneDict;             // .sceneDictionary Dictionary<int,SceneSettings>
+        internal static FieldInfo    FSceneSettingsName;     // SceneSettings.sceneName
+
+        // Local player
+        internal static FieldInfo    FPlayerInstance;    // Player.Instance static field
+        internal static PropertyInfo PActiveSceneName;   // ScenePortalManager.ActiveSceneName static
+
+        // connection id -1 = local player, 0+ = remote
         internal static readonly Dictionary<int, PlayerDot> Dots = new Dictionary<int, PlayerDot>();
         internal static Transform NpcImages;
-        internal static GameObject LocalPlayerGo;
 
         internal static void EnsureReflection()
         {
             if (MGetPlayerPos != null) return;
 
-            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            const BindingFlags F  = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            const BindingFlags SF = BindingFlags.Static   | BindingFlags.NonPublic | BindingFlags.Public;
 
             var mapType = typeof(Map);
             MGetPlayerPos = mapType.GetMethod("GetPlayerPosition",
@@ -44,22 +54,39 @@ namespace SunHavenMapDots
             FNGPPlayer     = ngpType.GetField("player",             F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "player");
             FNGPPlayerName = ngpType.GetField("playerName",         F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "playerName");
             FNGPFullyInit  = ngpType.GetField("isFullyInitialized", F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "isFullyInitialized");
-            PNGPSameScene  = ngpType.GetProperty("SameScene", F);
+            FNGPScene      = ngpType.GetField("scene",              F); // Int16 — optional
 
-            var playerType = typeof(Player);
-            FPlayerScene = playerType.GetField("currentScene", F) ?? throw new MissingFieldException(nameof(Player), "currentScene");
-            PPlayerExact = playerType.GetProperty("ExactPosition", F)
-                      ?? playerType.GetProperty("ExactPosition", BindingFlags.Instance | BindingFlags.Public)
-                      ?? throw new MissingMemberException(nameof(Player), "ExactPosition");
+            // SceneSettingsManager.Instance + .sceneDictionary
+            var ssmType = Type.GetType("Wish.SceneSettingsManager, SunHaven.Core")
+                       ?? Type.GetType("Wish.SceneSettingsManager, Assembly-CSharp");
+            if (ssmType != null)
+            {
+                PSceneSettingsMgrInst = ssmType.GetProperty("Instance", SF);
+                FSceneDict            = ssmType.GetField("sceneDictionary", F);
+            }
 
-            Plugin.Log.LogInfo("[MapDots] Reflection cache ready.");
+            // SceneSettings.sceneName
+            var ssType = Type.GetType("Wish.SceneSettings, SunHaven.Core")
+                      ?? Type.GetType("Wish.SceneSettings, Assembly-CSharp");
+            if (ssType != null)
+                FSceneSettingsName = ssType.GetField("sceneName", F);
+
+            // Player.Instance (static)
+            FPlayerInstance = typeof(Player).GetField("Instance", SF);
+
+            // ScenePortalManager.ActiveSceneName (static property)
+            var spmType = Type.GetType("Wish.ScenePortalManager, SunHaven.Core")
+                       ?? Type.GetType("Wish.ScenePortalManager, Assembly-CSharp");
+            if (spmType != null)
+                PActiveSceneName = spmType.GetProperty("ActiveSceneName", SF);
+
+            Plugin.Log.LogInfo($"[MapDots] Reflection ready. PlayerInstance={FPlayerInstance != null} ActiveSceneName={PActiveSceneName != null} FNGPScene={FNGPScene != null} SceneDict={FSceneDict != null}");
         }
 
         internal static Transform FindNpcImages()
         {
             var go = GameObject.Find("Player(Clone)");
             if (go == null) return null;
-            LocalPlayerGo = go;
 
             var mapImageTr = go.transform.Find(
                 "UI_Inventory/Inventory/Map/Background/Scroll View/Viewport/Content/MapImage");
@@ -77,6 +104,31 @@ namespace SunHavenMapDots
                 if (found != null) return found;
             }
             return null;
+        }
+
+        internal static string GetRemotePlayerScene(NetworkGamePlayer ngp)
+        {
+            if (FNGPScene == null || PSceneSettingsMgrInst == null ||
+                FSceneDict == null || FSceneSettingsName == null)
+                return GetActiveSceneName(); // fallback
+
+            var sceneId = Convert.ToInt32(FNGPScene.GetValue(ngp));
+            var mgrInst = PSceneSettingsMgrInst.GetValue(null);
+            if (mgrInst == null) return GetActiveSceneName();
+
+            var dict = FSceneDict.GetValue(mgrInst) as IDictionary;
+            if (dict == null) return GetActiveSceneName();
+
+            var settings = dict[sceneId];
+            if (settings == null) return GetActiveSceneName();
+
+            return FSceneSettingsName.GetValue(settings) as string ?? GetActiveSceneName();
+        }
+
+        internal static string GetActiveSceneName()
+        {
+            if (PActiveSceneName == null) return string.Empty;
+            return PActiveSceneName.GetValue(null) as string ?? string.Empty;
         }
 
         internal static void DestroyAllDots()
@@ -114,7 +166,7 @@ namespace SunHavenMapDots
             {
                 MapDotState.EnsureReflection();
                 if (Plugin.ShowLocalPlayer.Value)
-                    HandlePlayer(__instance, immediate, local: true);
+                    HandleLocalPlayer(__instance, immediate);
                 if (Plugin.ShowRemotePlayers.Value)
                     HandleRemotePlayers(__instance, immediate);
             }
@@ -132,21 +184,20 @@ namespace SunHavenMapDots
             return MapDotState.NpcImages;
         }
 
-        // Positions our own dot for the local player using their world-space ExactPosition.
-        // We do NOT touch the game's built-in 'Player' marker so we don't fight its sprite/alpha.
-        static void HandlePlayer(Map map, bool immediate, bool local)
+        static void HandleLocalPlayer(Map map, bool immediate)
         {
+            if (MapDotState.FPlayerInstance == null) return;
+
+            var player = MapDotState.FPlayerInstance.GetValue(null) as Player;
+            if (player == null) return;
+
             var npcImages = GetNpcImages();
             if (npcImages == null) return;
 
-            var localGo = MapDotState.LocalPlayerGo;
-            if (localGo == null) return;
+            var sceneName = MapDotState.GetActiveSceneName();
+            var worldPos  = player.transform.position;
 
-            var player = localGo.GetComponent<Player>();
-            if (player == null) return;
-
-            var scene = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
-            PositionDot(map, immediate, -1, player, scene, 0, npcImages, "");
+            PositionDot(map, immediate, -1, worldPos, sceneName, 0, npcImages, "");
         }
 
         static void HandleRemotePlayers(Map map, bool immediate)
@@ -168,25 +219,23 @@ namespace SunHavenMapDots
                 if (ngp == null || ngp.gameObject == null)   continue;
                 if (ngp.isLocalPlayer)                       continue;
                 if (!(bool)MapDotState.FNGPFullyInit.GetValue(ngp)) continue;
-                if (MapDotState.PNGPSameScene != null &&
-                    !(bool)MapDotState.PNGPSameScene.GetValue(ngp)) continue;
 
-                var player = MapDotState.FNGPPlayer.GetValue(ngp) as Player;
-                if (player == null) continue;
+                var remotePlayer = MapDotState.FNGPPlayer.GetValue(ngp) as Player;
+                if (remotePlayer == null) continue;
 
-                var scene = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
-                var pName = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
+                var sceneName = MapDotState.GetRemotePlayerScene(ngp);
+                var pName     = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
+                var worldPos  = remotePlayer.transform.position;
 
                 activeCids.Add(cid);
-                PositionDot(map, immediate, cid, player, scene, colorIndex, npcImages, pName);
+                PositionDot(map, immediate, cid, worldPos, sceneName, colorIndex, npcImages, pName);
                 colorIndex++;
             }
 
-            // Hide dots for players who left or changed scene
             var toRemove = new List<int>();
             foreach (var kvp in MapDotState.Dots)
             {
-                if (kvp.Key == -1) continue; // local player managed separately
+                if (kvp.Key == -1) continue;
                 if (activeCids.Contains(kvp.Key)) continue;
                 if (kvp.Value.Root == null) toRemove.Add(kvp.Key);
                 else kvp.Value.Root.SetActive(false);
@@ -194,7 +243,7 @@ namespace SunHavenMapDots
             foreach (var k in toRemove) MapDotState.Dots.Remove(k);
         }
 
-        static void PositionDot(Map map, bool immediate, int id, Player player,
+        static void PositionDot(Map map, bool immediate, int id, Vector3 worldPos,
                                 string scene, int colorIndex, Transform parent, string playerName)
         {
             if (!MapDotState.Dots.TryGetValue(id, out var dot) || dot.Root == null)
@@ -202,23 +251,20 @@ namespace SunHavenMapDots
                 var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
                 dot = CreateDot(parent, playerName, color);
                 MapDotState.Dots[id] = dot;
-                Plugin.Log.LogInfo($"[MapDots] Created dot for id={id} name='{playerName}'");
+                Plugin.Log.LogInfo($"[MapDots] Created dot id={id} name='{playerName}' scene='{scene}' world={worldPos}");
             }
-
-            var exactPos  = (Vector2)MapDotState.PPlayerExact.GetValue(player);
-            var worldPos3 = new Vector3(exactPos.x, exactPos.y, 0f);
 
             try
             {
                 var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(
-                    map, new object[] { dot.Img, worldPos3, scene });
+                    map, new object[] { dot.Img, worldPos, scene });
                 mapPos.y += Y_OFFSET;
-                MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
+                MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, true });
                 dot.Root.SetActive(true);
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[MapDots] Position error for id={id}: {ex.Message}");
+                Plugin.Log.LogWarning($"[MapDots] Position error id={id}: {ex.Message}");
             }
         }
 
@@ -266,10 +312,7 @@ namespace SunHavenMapDots
     internal static class Patch_MapOnEnable
     {
         [HarmonyPostfix]
-        static void Postfix()
-        {
-            MapDotState.DestroyAllDots();
-        }
+        static void Postfix() => MapDotState.DestroyAllDots();
     }
 
     [HarmonyPatch(typeof(Map), "OnDisable")]
