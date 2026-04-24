@@ -39,11 +39,12 @@ namespace SunHavenMapDots
         private static MethodInfo _mGetPlayerPos;    // Map.GetPlayerPosition (Image,Vector3,string)->Vector2
         private static MethodInfo _mSetImagePos;     // Map.SetImagePosition  (Image,Vector2,bool)->void
 
-        private static FieldInfo  _fNGPPlayer;       // NetworkGamePlayer.player  (Player)
-        private static FieldInfo  _fNGPPlayerName;   // NetworkGamePlayer.playerName (string)
-        private static FieldInfo  _fNGPFullyInit;    // NetworkGamePlayer.isFullyInitialized (bool)
-        private static FieldInfo  _fPlayerScene;     // Player.currentScene   (string)
-        private static PropertyInfo _pPlayerExact;  // Player.ExactPosition  (Vector2)
+        private static FieldInfo    _fNGPPlayer;       // NetworkGamePlayer.player  (Player)
+        private static FieldInfo    _fNGPPlayerName;   // NetworkGamePlayer.playerName (string)
+        private static FieldInfo    _fNGPFullyInit;    // NetworkGamePlayer.isFullyInitialized (bool)
+        private static PropertyInfo _pNGPSameScene;    // NetworkGamePlayer.SameScene (bool)
+        private static FieldInfo    _fPlayerScene;     // Player.currentScene   (string)
+        private static PropertyInfo _pPlayerExact;     // Player.ExactPosition  (Vector2)
 
         // ── Per-session state ─────────────────────────────────────────────────
         // key = connection id (int), value = our dot data
@@ -138,7 +139,7 @@ namespace SunHavenMapDots
                 if (ngp == null || ngp.gameObject == null)              continue;
                 if (ngp.isLocalPlayer)                                  continue;
                 if (!(bool)_fNGPFullyInit.GetValue(ngp))               continue;
-                if (!ngp.SameScene)                                     continue;
+                if (_pNGPSameScene != null && !(bool)_pNGPSameScene.GetValue(ngp)) continue;
 
                 var player = _fNGPPlayer.GetValue(ngp) as Player;
                 if (player == null)                                      continue;
@@ -257,7 +258,6 @@ namespace SunHavenMapDots
             if (_fMapContent != null) return; // already initialised
 
             const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
-            const BindingFlags S = BindingFlags.Static   | BindingFlags.NonPublic | BindingFlags.Public;
 
             var mapType = typeof(Map);
             _fMapContent   = mapType.GetField("mapContent",   F) ?? throw new MissingFieldException(nameof(Map), "mapContent");
@@ -273,6 +273,7 @@ namespace SunHavenMapDots
             _fNGPPlayer    = ngpType.GetField("player",            F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "player");
             _fNGPPlayerName= ngpType.GetField("playerName",        F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "playerName");
             _fNGPFullyInit = ngpType.GetField("isFullyInitialized",F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "isFullyInitialized");
+            _pNGPSameScene = ngpType.GetProperty("SameScene",       F); // optional — may fail on some builds
 
             var playerType = typeof(Player);
             _fPlayerScene  = playerType.GetField("currentScene",   F) ?? throw new MissingFieldException(nameof(Player), "currentScene");

@@ -6,16 +6,23 @@
     <RootNamespace>SunHavenMapDots</RootNamespace>
     <LangVersion>9</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Nullable>enable</Nullable>
+    <Nullable>disable</Nullable>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <NoWarn>CS8618;CS8600;CS8604;CS8601</NoWarn>
     <!-- Update this path if your game is installed elsewhere -->
     <GamePath Condition="'$(GamePath)'==''">C:\Program Files (x86)\Steam\steamapps\common\Sun Haven</GamePath>
   </PropertyGroup>
 
-  <!-- BepInEx from NuGet (provides 0Harmony + BepInEx.Core) -->
+  <!-- BepInEx + Harmony from the game's BepInEx installation -->
   <ItemGroup>
-    <PackageReference Include="BepInEx.Core"          Version="5.4.22" IncludeAssets="compile" />
-    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.1.0" />
+    <Reference Include="BepInEx">
+      <HintPath>$(GamePath)\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(GamePath)\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Game / Unity assemblies (not redistributed – must come from your game installation) -->
@@ -46,6 +53,26 @@
     </Reference>
     <Reference Include="Unity.TextMeshPro">
       <HintPath>$(GamePath)\Sun Haven_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.Serialization">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Sirenix.Serialization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.Utilities">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Sirenix.Utilities.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Sirenix.OdinInspector.Attributes">
+      <HintPath>$(GamePath)\Sun Haven_Data\Managed\Sirenix.OdinInspector.Attributes.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
