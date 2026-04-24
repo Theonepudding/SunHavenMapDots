@@ -21,8 +21,10 @@ namespace SunHavenMapDots
         internal static FieldInfo    FPlayerScene;
         internal static PropertyInfo PPlayerExact;
 
+        // connection id -1 = local player, 0+ = remote players
         internal static readonly Dictionary<int, PlayerDot> Dots = new Dictionary<int, PlayerDot>();
         internal static Transform NpcImages;
+        internal static GameObject LocalPlayerGo;
 
         internal static void EnsureReflection()
         {
@@ -55,10 +57,11 @@ namespace SunHavenMapDots
 
         internal static Transform FindNpcImages()
         {
-            var playerGo = GameObject.Find("Player(Clone)");
-            if (playerGo == null) return null;
+            var go = GameObject.Find("Player(Clone)");
+            if (go == null) return null;
+            LocalPlayerGo = go;
 
-            var mapImageTr = playerGo.transform.Find(
+            var mapImageTr = go.transform.Find(
                 "UI_Inventory/Inventory/Map/Background/Scroll View/Viewport/Content/MapImage");
             if (mapImageTr == null) return null;
 
@@ -103,7 +106,6 @@ namespace SunHavenMapDots
     internal static class Patch_UpdatePlayerImagePosition
     {
         private const float Y_OFFSET = 24f;
-        internal static bool LoggedOnce = false;
 
         [HarmonyPostfix]
         static void Postfix(Map __instance, bool immediate)
@@ -111,7 +113,8 @@ namespace SunHavenMapDots
             try
             {
                 MapDotState.EnsureReflection();
-                HandleLocalPlayerFix();
+                if (Plugin.ShowLocalPlayer.Value)
+                    HandlePlayer(__instance, immediate, local: true);
                 if (Plugin.ShowRemotePlayers.Value)
                     HandleRemotePlayers(__instance, immediate);
             }
@@ -129,59 +132,21 @@ namespace SunHavenMapDots
             return MapDotState.NpcImages;
         }
 
-        static void HandleLocalPlayerFix()
+        // Positions our own dot for the local player using their world-space ExactPosition.
+        // We do NOT touch the game's built-in 'Player' marker so we don't fight its sprite/alpha.
+        static void HandlePlayer(Map map, bool immediate, bool local)
         {
-            if (!Plugin.ShowLocalPlayer.Value) return;
-
             var npcImages = GetNpcImages();
             if (npcImages == null) return;
 
-            var candidates = new List<(Transform t, Image img)>();
-            foreach (Transform child in npcImages)
-            {
-                if (!child.name.StartsWith("Player", StringComparison.OrdinalIgnoreCase)) continue;
-                if (child.name.StartsWith("PlayerDot_", StringComparison.OrdinalIgnoreCase)) continue;
-                var img = child.GetComponent<Image>();
-                if (img == null) continue;
-                candidates.Add((child, img));
-            }
+            var localGo = MapDotState.LocalPlayerGo;
+            if (localGo == null) return;
 
-            if (!LoggedOnce)
-            {
-                LoggedOnce = true;
-                Plugin.Log.LogInfo($"[MapDots] NpcImages='{npcImages.name}' children={npcImages.childCount} markers={candidates.Count}");
-                foreach (var c in candidates)
-                    Plugin.Log.LogInfo($"[MapDots]   '{c.t.name}' activeH={c.t.gameObject.activeInHierarchy} pos={c.img.rectTransform.anchoredPosition}");
-            }
+            var player = localGo.GetComponent<Player>();
+            if (player == null) return;
 
-            if (candidates.Count == 0) return;
-
-            // Sort: prefer activeInHierarchy, then activeSelf
-            candidates.Sort((a, b) =>
-            {
-                int dh = b.t.gameObject.activeInHierarchy.CompareTo(a.t.gameObject.activeInHierarchy);
-                if (dh != 0) return dh;
-                return b.t.gameObject.activeSelf.CompareTo(a.t.gameObject.activeSelf);
-            });
-
-            var best = candidates[0];
-            for (int i = 1; i < candidates.Count; i++)
-                candidates[i].t.gameObject.SetActive(false);
-
-            if (!best.t.gameObject.activeSelf)
-                best.t.gameObject.SetActive(true);
-
-            best.img.color = Plugin.PlayerColors[0];
-
-            float d  = Plugin.DotSize.Value * 2f;
-            var   rt = best.img.rectTransform;
-            if (rt != null)
-            {
-                rt.sizeDelta = new Vector2(d, d);
-                // Game already moved the marker this frame; bump it up by Y_OFFSET
-                var pos = rt.anchoredPosition;
-                rt.anchoredPosition = new Vector2(pos.x, pos.y + Y_OFFSET);
-            }
+            var scene = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
+            PositionDot(map, immediate, -1, player, scene, 0, npcImages, "");
         }
 
         static void HandleRemotePlayers(Map map, bool immediate)
@@ -209,38 +174,19 @@ namespace SunHavenMapDots
                 var player = MapDotState.FNGPPlayer.GetValue(ngp) as Player;
                 if (player == null) continue;
 
+                var scene = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
+                var pName = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
+
                 activeCids.Add(cid);
-
-                if (!MapDotState.Dots.TryGetValue(cid, out var dot) || dot.Root == null)
-                {
-                    var pName = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
-                    var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
-                    dot = CreateDot(npcImages, pName, color);
-                    MapDotState.Dots[cid] = dot;
-                }
-
+                PositionDot(map, immediate, cid, player, scene, colorIndex, npcImages, pName);
                 colorIndex++;
-
-                var exactPos  = (Vector2)MapDotState.PPlayerExact.GetValue(player);
-                var sceneName = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
-                var worldPos3 = new Vector3(exactPos.x, exactPos.y, 0f);
-
-                try
-                {
-                    var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(map, new object[] { dot.Img, worldPos3, sceneName });
-                    mapPos.y += Y_OFFSET;
-                    MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
-                    dot.Root.SetActive(true);
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.LogWarning($"[MapDots] Position error for cid {cid}: {ex.Message}");
-                }
             }
 
+            // Hide dots for players who left or changed scene
             var toRemove = new List<int>();
             foreach (var kvp in MapDotState.Dots)
             {
+                if (kvp.Key == -1) continue; // local player managed separately
                 if (activeCids.Contains(kvp.Key)) continue;
                 if (kvp.Value.Root == null) toRemove.Add(kvp.Key);
                 else kvp.Value.Root.SetActive(false);
@@ -248,11 +194,40 @@ namespace SunHavenMapDots
             foreach (var k in toRemove) MapDotState.Dots.Remove(k);
         }
 
+        static void PositionDot(Map map, bool immediate, int id, Player player,
+                                string scene, int colorIndex, Transform parent, string playerName)
+        {
+            if (!MapDotState.Dots.TryGetValue(id, out var dot) || dot.Root == null)
+            {
+                var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
+                dot = CreateDot(parent, playerName, color);
+                MapDotState.Dots[id] = dot;
+                Plugin.Log.LogInfo($"[MapDots] Created dot for id={id} name='{playerName}'");
+            }
+
+            var exactPos  = (Vector2)MapDotState.PPlayerExact.GetValue(player);
+            var worldPos3 = new Vector3(exactPos.x, exactPos.y, 0f);
+
+            try
+            {
+                var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(
+                    map, new object[] { dot.Img, worldPos3, scene });
+                mapPos.y += Y_OFFSET;
+                MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
+                dot.Root.SetActive(true);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[MapDots] Position error for id={id}: {ex.Message}");
+            }
+        }
+
         static PlayerDot CreateDot(Transform parent, string playerName, Color color)
         {
             float size = Plugin.DotSize.Value * 2f;
 
-            var root = new GameObject($"PlayerDot_{playerName}",
+            var root = new GameObject(
+                string.IsNullOrEmpty(playerName) ? "MapDot_Local" : $"MapDot_{playerName}",
                 typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             root.transform.SetParent(parent, false);
             root.transform.SetAsLastSibling();
@@ -266,7 +241,7 @@ namespace SunHavenMapDots
             img.raycastTarget = false;
 
             TextMeshProUGUI label = null;
-            if (Plugin.ShowPlayerNames.Value)
+            if (Plugin.ShowPlayerNames.Value && !string.IsNullOrEmpty(playerName))
             {
                 var labelGo = new GameObject("Label",
                     typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
@@ -294,7 +269,6 @@ namespace SunHavenMapDots
         static void Postfix()
         {
             MapDotState.DestroyAllDots();
-            Patch_UpdatePlayerImagePosition.LoggedOnce = false;
         }
     }
 
