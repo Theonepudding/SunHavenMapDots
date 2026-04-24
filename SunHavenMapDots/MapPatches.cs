@@ -157,7 +157,6 @@ namespace SunHavenMapDots
     [HarmonyPatch(typeof(Map), "UpdatePlayerImagePosition")]
     internal static class Patch_UpdatePlayerImagePosition
     {
-        private const float Y_OFFSET = 24f;
 
         [HarmonyPostfix]
         static void Postfix(Map __instance, bool immediate)
@@ -258,7 +257,6 @@ namespace SunHavenMapDots
             {
                 var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(
                     map, new object[] { dot.Img, worldPos, scene });
-                mapPos.y += Y_OFFSET;
                 MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, true });
                 dot.Root.SetActive(true);
             }
@@ -270,7 +268,7 @@ namespace SunHavenMapDots
 
         static PlayerDot CreateDot(Transform parent, string playerName, Color color)
         {
-            float size = Plugin.DotSize.Value * 2f;
+            float size = Plugin.DotSize.Value;
 
             var root = new GameObject(
                 string.IsNullOrEmpty(playerName) ? "MapDot_Local" : $"MapDot_{playerName}",

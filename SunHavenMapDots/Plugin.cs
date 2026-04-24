@@ -32,8 +32,8 @@ namespace SunHavenMapDots
             Instance = this;
             Log = Logger;
 
-            DotSize = Config.Bind("Display", "DotSize", 10f,
-                new ConfigDescription("Radius (pixels) of each player dot on the map.", new AcceptableValueRange<float>(4f, 32f)));
+            DotSize = Config.Bind("Display", "DotSize", 6f,
+                new ConfigDescription("Diameter (map units) of each player dot.", new AcceptableValueRange<float>(2f, 20f)));
 
             ShowLocalPlayer = Config.Bind("Display", "ShowLocalPlayer", true,
                 "Show the local player's dot (yellow) on the map.");
