@@ -44,7 +44,10 @@ namespace SunHavenMapDots
             ShowPlayerNames = Config.Bind("Display", "ShowPlayerNames", true,
                 "Show a small name label above each remote-player dot.");
 
-            new Harmony(PluginInfo.PLUGIN_GUID).PatchAll(typeof(MapPatches));
+            var harmony = new Harmony(PluginInfo.PLUGIN_GUID);
+            harmony.PatchAll(typeof(Patch_UpdatePlayerImagePosition));
+            harmony.PatchAll(typeof(Patch_MapOnEnable));
+            harmony.PatchAll(typeof(Patch_MapOnDisable));
             Logger.LogInfo($"{PluginInfo.PLUGIN_NAME} v{PluginInfo.PLUGIN_VERSION} loaded.");
         }
     }

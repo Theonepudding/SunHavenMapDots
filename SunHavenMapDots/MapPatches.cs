@@ -10,14 +10,70 @@ using Wish;
 
 namespace SunHavenMapDots
 {
-    // ──────────────────────────────────────────────────────────────────────────
-    // Holds the UI objects we create for one remote player.
-    // ──────────────────────────────────────────────────────────────────────────
+    // ── Shared state used by all three patch classes ───────────────────────────
+    internal static class MapDotState
+    {
+        // Reflection cache
+        internal static FieldInfo  FMapContent;
+        internal static FieldInfo  FPlayerImages;
+        internal static MethodInfo MGetPlayerPos;
+        internal static MethodInfo MSetImagePos;
+        internal static FieldInfo  FNGPPlayer;
+        internal static FieldInfo  FNGPPlayerName;
+        internal static FieldInfo  FNGPFullyInit;
+        internal static PropertyInfo PNGPSameScene;
+        internal static FieldInfo  FPlayerScene;
+        internal static PropertyInfo PPlayerExact;
+
+        // key = connection id, value = dot data
+        internal static readonly Dictionary<int, PlayerDot> Dots = new Dictionary<int, PlayerDot>();
+        internal static Map CurrentMap;
+
+        internal static void EnsureReflection()
+        {
+            if (FMapContent != null) return;
+
+            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+
+            var mapType    = typeof(Map);
+            FMapContent    = mapType.GetField("mapContent",  F) ?? throw new MissingFieldException(nameof(Map), "mapContent");
+            FPlayerImages  = mapType.GetField("playerImages", F) ?? throw new MissingFieldException(nameof(Map), "playerImages");
+            MGetPlayerPos  = mapType.GetMethod("GetPlayerPosition",
+                                F, null, new[] { typeof(Image), typeof(Vector3), typeof(string) }, null)
+                             ?? throw new MissingMethodException(nameof(Map), "GetPlayerPosition");
+            MSetImagePos   = mapType.GetMethod("SetImagePosition",
+                                F, null, new[] { typeof(Image), typeof(Vector2), typeof(bool) }, null)
+                             ?? throw new MissingMethodException(nameof(Map), "SetImagePosition");
+
+            var ngpType    = typeof(NetworkGamePlayer);
+            FNGPPlayer     = ngpType.GetField("player",             F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "player");
+            FNGPPlayerName = ngpType.GetField("playerName",         F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "playerName");
+            FNGPFullyInit  = ngpType.GetField("isFullyInitialized", F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "isFullyInitialized");
+            PNGPSameScene  = ngpType.GetProperty("SameScene", F); // optional
+
+            var playerType = typeof(Player);
+            FPlayerScene   = playerType.GetField("currentScene", F) ?? throw new MissingFieldException(nameof(Player), "currentScene");
+            PPlayerExact   = playerType.GetProperty("ExactPosition", F)
+                          ?? playerType.GetProperty("ExactPosition", BindingFlags.Instance | BindingFlags.Public)
+                          ?? throw new MissingMemberException(nameof(Player), "ExactPosition");
+
+            Plugin.Log.LogInfo("[MapDots] Reflection cache ready.");
+        }
+
+        internal static void DestroyAllDots()
+        {
+            foreach (var dot in Dots.Values)
+                if (dot.Root != null) UnityEngine.Object.Destroy(dot.Root);
+            Dots.Clear();
+        }
+    }
+
+    // ── Data for one player dot ────────────────────────────────────────────────
     internal sealed class PlayerDot
     {
-        internal readonly GameObject Root;
-        internal readonly Image     Img;
-        internal readonly TextMeshProUGUI Label; // may be null if TMP unavailable
+        internal readonly GameObject       Root;
+        internal readonly Image            Img;
+        internal readonly TextMeshProUGUI  Label;
 
         internal PlayerDot(GameObject root, Image img, TextMeshProUGUI label)
         {
@@ -27,105 +83,52 @@ namespace SunHavenMapDots
         }
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // All Harmony patches live here.
-    // ──────────────────────────────────────────────────────────────────────────
-    [HarmonyPatch]
-    internal static class MapPatches
+    // ── Patch 1: UpdatePlayerImagePosition ────────────────────────────────────
+    [HarmonyPatch(typeof(Map), "UpdatePlayerImagePosition")]
+    internal static class Patch_UpdatePlayerImagePosition
     {
-        // ── Reflection cache ──────────────────────────────────────────────────
-        private static FieldInfo  _fMapContent;      // Map.mapContent        (RectTransform)
-        private static FieldInfo  _fPlayerImages;    // Map.playerImages      (List<Image>)
-        private static MethodInfo _mGetPlayerPos;    // Map.GetPlayerPosition (Image,Vector3,string)->Vector2
-        private static MethodInfo _mSetImagePos;     // Map.SetImagePosition  (Image,Vector2,bool)->void
-
-        private static FieldInfo    _fNGPPlayer;       // NetworkGamePlayer.player  (Player)
-        private static FieldInfo    _fNGPPlayerName;   // NetworkGamePlayer.playerName (string)
-        private static FieldInfo    _fNGPFullyInit;    // NetworkGamePlayer.isFullyInitialized (bool)
-        private static PropertyInfo _pNGPSameScene;    // NetworkGamePlayer.SameScene (bool)
-        private static FieldInfo    _fPlayerScene;     // Player.currentScene   (string)
-        private static PropertyInfo _pPlayerExact;     // Player.ExactPosition  (Vector2)
-
-        // ── Per-session state ─────────────────────────────────────────────────
-        // key = connection id (int), value = our dot data
-        private static readonly Dictionary<int, PlayerDot> _dots = new();
-        private static Map _currentMap;
-
-        // ── Patch target ──────────────────────────────────────────────────────
-        [HarmonyTargetMethod]
-        static MethodBase TargetMethod()
-            => AccessTools.Method(typeof(Map), "UpdatePlayerImagePosition", new[] { typeof(bool) });
-
         [HarmonyPostfix]
-        static void UpdatePlayerImagePosition_Postfix(Map __instance, bool immediate)
+        static void Postfix(Map __instance, bool immediate)
         {
             try
             {
-                EnsureReflection();
+                MapDotState.EnsureReflection();
                 HandleLocalPlayerFix(__instance, immediate);
                 if (Plugin.ShowRemotePlayers.Value)
                     HandleRemotePlayers(__instance, immediate);
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"[MapDots] Unhandled exception: {ex}");
+                Plugin.Log.LogError($"[MapDots] Exception in UpdatePlayerImagePosition: {ex}");
             }
         }
 
-        // ── Map opened / closed ───────────────────────────────────────────────
-        [HarmonyPatch(typeof(Map), "OnEnable")]
-        [HarmonyPostfix]
-        static void OnEnable_Postfix(Map __instance)
-        {
-            if (_currentMap != __instance)
-            {
-                DestroyAllDots();
-                _currentMap = __instance;
-            }
-        }
-
-        [HarmonyPatch(typeof(Map), "OnDisable")]
-        [HarmonyPostfix]
-        static void OnDisable_Postfix()
-        {
-            // Hide dots while map is closed (positions may be stale).
-            foreach (var dot in _dots.Values)
-                if (dot.Root != null) dot.Root.SetActive(false);
-        }
-
-        // ── Local-player fix ──────────────────────────────────────────────────
-        // Restores the yellow local-player dot (re-implements the original fix).
         static void HandleLocalPlayerFix(Map map, bool immediate)
         {
             if (!Plugin.ShowLocalPlayer.Value) return;
 
-            var images = _fPlayerImages.GetValue(map) as List<Image>;
+            var images = MapDotState.FPlayerImages.GetValue(map) as List<Image>;
             if (images == null || images.Count == 0) return;
 
-            // The game populates playerImages[0] for the local player.
-            // If it got destroyed/deactivated, reactivate it.
             var localImg = images[0];
             if (localImg == null) return;
 
-            // Ensure it's visible and properly sized.
             if (!localImg.gameObject.activeSelf)
                 localImg.gameObject.SetActive(true);
 
-            // Tint yellow so it's obviously "you".
             localImg.color = Plugin.PlayerColors[0];
 
-            float d = Plugin.DotSize.Value * 2f;
-            var rt = localImg.rectTransform;
+            float d  = Plugin.DotSize.Value * 2f;
+            var   rt = localImg.rectTransform;
             if (rt != null) rt.sizeDelta = new Vector2(d, d);
         }
 
-        // ── Remote players ────────────────────────────────────────────────────
         static void HandleRemotePlayers(Map map, bool immediate)
         {
             var lobby = NetworkLobbyManager.Instance;
             if (lobby == null) return;
 
-            var mapContent = _fMapContent.GetValue(map) as RectTransform;
+            var mapContent = MapDotState.FMapContent.GetValue(map) as RectTransform;
             if (mapContent == null) return;
 
             var activeCids = new HashSet<int>();
@@ -136,94 +139,87 @@ namespace SunHavenMapDots
                 var cid = kvp.Key;
                 var ngp = kvp.Value;
 
-                if (ngp == null || ngp.gameObject == null)              continue;
-                if (ngp.isLocalPlayer)                                  continue;
-                if (!(bool)_fNGPFullyInit.GetValue(ngp))               continue;
-                if (_pNGPSameScene != null && !(bool)_pNGPSameScene.GetValue(ngp)) continue;
+                if (ngp == null || ngp.gameObject == null)   continue;
+                if (ngp.isLocalPlayer)                       continue;
+                if (!(bool)MapDotState.FNGPFullyInit.GetValue(ngp)) continue;
+                if (MapDotState.PNGPSameScene != null &&
+                    !(bool)MapDotState.PNGPSameScene.GetValue(ngp)) continue;
 
-                var player = _fNGPPlayer.GetValue(ngp) as Player;
-                if (player == null)                                      continue;
+                var player = MapDotState.FNGPPlayer.GetValue(ngp) as Player;
+                if (player == null) continue;
 
                 activeCids.Add(cid);
 
-                // Create dot on first encounter.
-                if (!_dots.TryGetValue(cid, out var dot) || dot.Root == null)
+                if (!MapDotState.Dots.TryGetValue(cid, out var dot) || dot.Root == null)
                 {
-                    var name  = _fNGPPlayerName.GetValue(ngp) as string ?? "Player";
+                    var pName = MapDotState.FNGPPlayerName.GetValue(ngp) as string ?? "Player";
                     var color = Plugin.PlayerColors[colorIndex % Plugin.PlayerColors.Length];
-                    dot = CreateDot(mapContent, name, color);
-                    _dots[cid] = dot;
+                    dot = CreateDot(mapContent, pName, color);
+                    MapDotState.Dots[cid] = dot;
                 }
 
                 colorIndex++;
 
-                // Compute world position and scene name.
-                var exactPos  = (Vector2)_pPlayerExact.GetValue(player);
-                var sceneName = _fPlayerScene.GetValue(player) as string ?? string.Empty;
+                var exactPos  = (Vector2)MapDotState.PPlayerExact.GetValue(player);
+                var sceneName = MapDotState.FPlayerScene.GetValue(player) as string ?? string.Empty;
                 var worldPos3 = new Vector3(exactPos.x, exactPos.y, 0f);
 
                 try
                 {
-                    var mapPos = (Vector2)_mGetPlayerPos.Invoke(map, new object[] { dot.Img, worldPos3, sceneName });
-                    _mSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
+                    var mapPos = (Vector2)MapDotState.MGetPlayerPos.Invoke(map, new object[] { dot.Img, worldPos3, sceneName });
+                    MapDotState.MSetImagePos.Invoke(map, new object[] { dot.Img, mapPos, immediate });
                     dot.Root.SetActive(true);
                 }
                 catch (Exception ex)
                 {
-                    Plugin.Log.LogWarning($"[MapDots] Position error for connection {cid}: {ex.Message}");
+                    Plugin.Log.LogWarning($"[MapDots] Position error for cid {cid}: {ex.Message}");
                 }
             }
 
-            // Hide or clean up dots for players who are no longer active/same-scene.
+            // Deactivate dots for players who left or changed scene
             var toRemove = new List<int>();
-            foreach (var kvp in _dots)
+            foreach (var kvp in MapDotState.Dots)
             {
-                if (!activeCids.Contains(kvp.Key))
-                {
-                    if (kvp.Value.Root == null)
-                        toRemove.Add(kvp.Key);
-                    else
-                        kvp.Value.Root.SetActive(false);
-                }
+                if (activeCids.Contains(kvp.Key)) continue;
+                if (kvp.Value.Root == null) toRemove.Add(kvp.Key);
+                else kvp.Value.Root.SetActive(false);
             }
-            foreach (var k in toRemove) _dots.Remove(k);
+            foreach (var k in toRemove) MapDotState.Dots.Remove(k);
         }
 
-        // ── Dot factory ───────────────────────────────────────────────────────
         static PlayerDot CreateDot(RectTransform parent, string playerName, Color color)
         {
             float size = Plugin.DotSize.Value * 2f;
 
-            // Root GameObject parented to the map content layer.
-            var root = new GameObject($"MapDot_{playerName}", typeof(RectTransform));
+            var root   = new GameObject($"MapDot_{playerName}", typeof(RectTransform));
             root.transform.SetParent(parent, false);
-            root.transform.SetAsLastSibling(); // render on top of NPC dots
+            root.transform.SetAsLastSibling();
 
             var rootRt = root.GetComponent<RectTransform>();
             rootRt.anchorMin = rootRt.anchorMax = rootRt.pivot = new Vector2(0.5f, 0.5f);
             rootRt.sizeDelta = new Vector2(size, size);
 
-            // Coloured circle (outer ring).
+            // Coloured outer circle
             var ringGo = new GameObject("Ring", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             ringGo.transform.SetParent(root.transform, false);
-            var ringRt = ringGo.GetComponent<RectTransform>();
+            var ringRt  = ringGo.GetComponent<RectTransform>();
             ringRt.anchorMin = ringRt.anchorMax = ringRt.pivot = new Vector2(0.5f, 0.5f);
             ringRt.sizeDelta = new Vector2(size, size);
             var ringImg = ringGo.GetComponent<Image>();
             ringImg.color = color;
             ringImg.raycastTarget = false;
 
-            // White dot in the centre so the marker is readable on any background.
+            // White centre dot
             var coreGo = new GameObject("Core", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             coreGo.transform.SetParent(root.transform, false);
-            var coreRt = coreGo.GetComponent<RectTransform>();
+            var coreRt  = coreGo.GetComponent<RectTransform>();
             coreRt.anchorMin = coreRt.anchorMax = coreRt.pivot = new Vector2(0.5f, 0.5f);
             coreRt.sizeDelta = new Vector2(size * 0.45f, size * 0.45f);
             var coreImg = coreGo.GetComponent<Image>();
             coreImg.color = Color.white;
             coreImg.raycastTarget = false;
 
-            // Optional name label above the dot.
+            // Optional name label
             TextMeshProUGUI label = null;
             if (Plugin.ShowPlayerNames.Value)
             {
@@ -243,45 +239,32 @@ namespace SunHavenMapDots
 
             return new PlayerDot(root, ringImg, label);
         }
+    }
 
-        // ── Cleanup ───────────────────────────────────────────────────────────
-        static void DestroyAllDots()
+    // ── Patch 2: Map.OnEnable ─────────────────────────────────────────────────
+    [HarmonyPatch(typeof(Map), "OnEnable")]
+    internal static class Patch_MapOnEnable
+    {
+        [HarmonyPostfix]
+        static void Postfix(Map __instance)
         {
-            foreach (var dot in _dots.Values)
-                if (dot.Root != null) UnityEngine.Object.Destroy(dot.Root);
-            _dots.Clear();
+            if (MapDotState.CurrentMap != __instance)
+            {
+                MapDotState.DestroyAllDots();
+                MapDotState.CurrentMap = __instance;
+            }
         }
+    }
 
-        // ── Reflection bootstrap ─────────────────────────────────────────────
-        static void EnsureReflection()
+    // ── Patch 3: Map.OnDisable ────────────────────────────────────────────────
+    [HarmonyPatch(typeof(Map), "OnDisable")]
+    internal static class Patch_MapOnDisable
+    {
+        [HarmonyPostfix]
+        static void Postfix()
         {
-            if (_fMapContent != null) return; // already initialised
-
-            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
-
-            var mapType = typeof(Map);
-            _fMapContent   = mapType.GetField("mapContent",   F) ?? throw new MissingFieldException(nameof(Map), "mapContent");
-            _fPlayerImages = mapType.GetField("playerImages",  F) ?? throw new MissingFieldException(nameof(Map), "playerImages");
-            _mGetPlayerPos = mapType.GetMethod("GetPlayerPosition",
-                F, null, new[] { typeof(Image), typeof(Vector3), typeof(string) }, null)
-                ?? throw new MissingMethodException(nameof(Map), "GetPlayerPosition");
-            _mSetImagePos  = mapType.GetMethod("SetImagePosition",
-                F, null, new[] { typeof(Image), typeof(Vector2), typeof(bool) }, null)
-                ?? throw new MissingMethodException(nameof(Map), "SetImagePosition");
-
-            var ngpType = typeof(NetworkGamePlayer);
-            _fNGPPlayer    = ngpType.GetField("player",            F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "player");
-            _fNGPPlayerName= ngpType.GetField("playerName",        F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "playerName");
-            _fNGPFullyInit = ngpType.GetField("isFullyInitialized",F) ?? throw new MissingFieldException(nameof(NetworkGamePlayer), "isFullyInitialized");
-            _pNGPSameScene = ngpType.GetProperty("SameScene",       F); // optional — may fail on some builds
-
-            var playerType = typeof(Player);
-            _fPlayerScene  = playerType.GetField("currentScene",   F) ?? throw new MissingFieldException(nameof(Player), "currentScene");
-            _pPlayerExact  = playerType.GetProperty("ExactPosition", F)
-                          ?? playerType.GetProperty("ExactPosition", BindingFlags.Instance | BindingFlags.Public)
-                          ?? throw new MissingMemberException(nameof(Player), "ExactPosition");
-
-            Plugin.Log.LogInfo("[MapDots] Reflection cache ready.");
+            foreach (var dot in MapDotState.Dots.Values)
+                if (dot.Root != null) dot.Root.SetActive(false);
         }
     }
 }
